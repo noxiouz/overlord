@@ -20,3 +20,9 @@ options:
     + `slave` - path to the executable inside the container
     + `startuptimeout` - time to wait for incoming connection from worker
     + `version` - show version and exit
+
+## Build
+
+```shell
+make
+```
