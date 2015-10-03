@@ -15,11 +15,11 @@ overlord -http ":8080" -locator "cocaine-dev.host.net" -slave "path/to/ur/slave"
 ```
 
 options:
-    + `http` - endpoint to listen incoming HTTP request. This port must be exposed by docker (default ":8080")
-    + `locator` - comma-separated list of locators for the worker (default "127.0.0.1:10053,[::1]:10053")
-    + `slave` - path to the executable inside the container
-    + `startuptimeout` - time to wait for incoming connection from worker
-    + `version` - show version and exit
+ + `http` - endpoint to listen incoming HTTP request. This port must be exposed by docker. Default: `:8080`
+ + `locator` - comma-separated list of locators for the worker. Default `127.0.0.1:10053,[::1]:10053`
+ + `slave` - path to the executable inside the container
+ + `startuptimeout` - time to wait for incoming connection from worker
+ + `version` - show version and exit
 
 ## Build
 
