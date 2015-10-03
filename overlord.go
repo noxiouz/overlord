@@ -18,27 +18,17 @@ import (
 	"github.com/cocaine/cocaine-framework-go/vendor/src/github.com/ugorji/go/codec"
 )
 
-var (
-	mhAsocket = codec.MsgpackHandle{
-		BasicHandle: codec.BasicHandle{
-			EncodeOptions: codec.EncodeOptions{
-				StructToArray: true,
-			},
-		},
-	}
-	hAsocket = &mhAsocket
-)
-
 const (
 	utilitySession = 1
 	handshake      = 0
 
 	invoke = 0
 	chunk  = 0
+	_error = 1
 	close  = 2
 )
 
-type Sessions map[uint64]chan *cocaine.Message
+type sessions map[uint64]chan *cocaine.Message
 
 type logger struct{}
 
@@ -47,33 +37,39 @@ func (l *logger) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// Overlord simple mock proxy. It starts a worker and HTTP server
+// to send requests to the worker.
 type Overlord struct {
-	cfg *OverlordConfig
+	cfg *Config
 
 	mu       sync.Mutex
 	counter  uint64
-	sessions Sessions
+	sessions sessions
 
 	conn net.Conn
 }
 
-type OverlordConfig struct {
-	Path         string
-	Env          []string
-	Locator      string
-	HTTPEndpoint string
+// Config for Overlord
+type Config struct {
+	Slave          string
+	Locator        string
+	HTTPEndpoint   string
+	StartUpTimeout time.Duration
 }
 
-func NewOverlord(cfg *OverlordConfig) (*Overlord, error) {
+// NewOverlord creates new Overlord with given config
+func NewOverlord(cfg *Config) (*Overlord, error) {
 	olord := &Overlord{
 		cfg: cfg,
 
 		counter:  10,
-		sessions: make(Sessions),
+		sessions: make(sessions),
 	}
 	return olord, nil
 }
 
+// Start launches the worker, HTTP server. It's the only method
+// user has to call.
 func (o *Overlord) Start() error {
 	appname := "testapp"
 	socketPath := path.Join(
@@ -82,24 +78,18 @@ func (o *Overlord) Start() error {
 	)
 
 	args := []string{
-		path.Base(o.cfg.Path),
-		"--app",
-		appname,
-		"--locator",
-		o.cfg.Locator,
-		"--uuid",
-		uuid.New(),
-		"--endpoint",
-		socketPath,
-		"--protocol",
-		"1",
+		path.Base(o.cfg.Slave),
+		"--app", appname,
+		"--locator", o.cfg.Locator,
+		"--uuid", uuid.New(),
+		"--endpoint", socketPath,
+		"--protocol", "1",
 	}
 
 	cmd := exec.Cmd{
-		Path: o.cfg.Path,
+		Path: o.cfg.Slave,
 
 		Args: args,
-		Env:  o.cfg.Env,
 		// inside container worker has that cwd
 		Dir: "/",
 
@@ -147,9 +137,8 @@ func (o *Overlord) Start() error {
 
 func (o *Overlord) acceptConnect(ln net.Listener) error {
 	if unixLn, ok := ln.(*net.UnixListener); ok {
-		timeout := time.Second * 60
-		log.Printf("set acception deadline: %v", timeout)
-		unixLn.SetDeadline(time.Now().Add(timeout))
+		log.Printf("set acception deadline: %v", o.cfg.StartUpTimeout)
+		unixLn.SetDeadline(time.Now().Add(o.cfg.StartUpTimeout))
 	}
 
 	conn, err := ln.Accept()
@@ -195,13 +184,12 @@ func (o *Overlord) handleConnection(conn io.ReadWriteCloser) {
 }
 
 func (o *Overlord) handleHTTPRequest(w http.ResponseWriter, req *http.Request) {
-	log.Println("handling request")
 	defer req.Body.Close()
+	w.Header().Add("X-Powered-By", "Cocaine")
 
 	body, err := ioutil.ReadAll(req.Body)
 	if err != nil {
 		w.Header().Add("X-Error-Generated-By", "Cocaine")
-		w.Header().Add("X-Powered-By", "Cocaine")
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, "unable to read the whole body")
 		return
@@ -238,13 +226,14 @@ func (o *Overlord) handleHTTPRequest(w http.ResponseWriter, req *http.Request) {
 
 	enqueueTask(counter, task, o.conn)
 	var first = true
-	for chunk := range channel {
-		switch chunk.MsgType {
-		case 0:
-			// chunk
-			payload, ok := chunk.Payload[0].([]byte)
+FOR:
+	for msg := range channel {
+		switch msg.MsgType {
+		case chunk:
+			payload, ok := msg.Payload[0].([]byte)
 			if !ok {
 				log.Panicf("invalid response data, must be []byte")
+				continue FOR
 			}
 
 			if first {
@@ -258,17 +247,30 @@ func (o *Overlord) handleHTTPRequest(w http.ResponseWriter, req *http.Request) {
 					w.Header().Add(header[0], header[1])
 				}
 				w.WriteHeader(res.Code)
-				continue
+				continue FOR
 			}
 			w.Write(payload)
-		case 1:
-			// error type
-			break
-		case 2:
+		case _error:
+			log.Println("error message from worker")
+			w.Header().Add("X-Error-Generated-By", "Cocaine")
+			w.WriteHeader(http.StatusInternalServerError)
+			var msgerr struct {
+				CodeInfo [2]int
+				Message  string
+			}
+			if err := convertPayload(msg.Payload, &msgerr); err != nil {
+				fmt.Fprintf(w, "unable to decode error reply: %v", err)
+				return
+			}
+			fmt.Fprintf(w, "worker replied with error: [%d] [%d] %s",
+				msgerr.CodeInfo[0], msgerr.CodeInfo[1], msgerr.Message)
+			return
+		case close:
 			// close type
 			return
 		default:
 			// protocol error
+			log.Printf("protocol error: unknown message %v", msg)
 		}
 	}
 }
