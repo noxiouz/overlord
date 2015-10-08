@@ -196,7 +196,7 @@ func (o *Overlord) handleHTTPRequest(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// method uri 1.1 headers body
-	headers := make([][2]string, len(req.Header))
+	headers := make([][2]string, 0, len(req.Header))
 	for header, values := range req.Header {
 		for _, val := range values {
 			headers = append(headers, [2]string{header, val})

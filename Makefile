@@ -14,3 +14,6 @@ deps:
 
 build: deps
 	go build -o overlord ${GO_LDFLAGS} ./cmd/main.go
+
+build_linux: deps
+	env GOOS=linux go build -o overlord ${GO_LDFLAGS} ./cmd/main.go
